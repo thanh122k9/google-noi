@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TikTok Survivor</title>
+    <script>
+      // Polyfill global for libraries that expect it
+      window.global = window;
+      
+      // Prevent node-fetch or other libraries from crashing when trying to overwrite fetch
+      const descriptor = Object.getOwnPropertyDescriptor(window, 'fetch');
+      if (descriptor && !descriptor.set) {
+        const originalFetch = window.fetch;
+        Object.defineProperty(window, 'fetch', {
+          get: () => originalFetch,
+          set: () => { /* Ignore attempts to overwrite fetch */ },
+          configurable: true
+        });
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
