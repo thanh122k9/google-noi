@@ -5,6 +5,8 @@ import { createServer as createViteServer } from "vite";
 import { TikTokLiveConnection, WebcastEvent, ControlEvent } from "tiktok-live-connector";
 import * as googleTTS from "google-tts-api";
 import dotenv from "dotenv";
+import fs from "fs";
+import path from "path";
 
 dotenv.config();
 
@@ -21,7 +23,30 @@ async function startServer() {
     },
   });
 
-  const PORT = 3000;
+  const PORT = 3009;
+  const HISTORY_FILE = path.join(process.cwd(), "used_ids.json");
+
+  // Load history from file
+  const getHistory = (): string[] => {
+    try {
+      if (fs.existsSync(HISTORY_FILE)) {
+        return JSON.parse(fs.readFileSync(HISTORY_FILE, "utf-8"));
+      }
+    } catch (e) {
+      console.error("Error reading history file:", e);
+    }
+    return [];
+  };
+
+  // Save history to file
+  const saveToHistory = (id: string) => {
+    let history = getHistory();
+    if (!history.includes(id)) {
+      history.unshift(id); // Add to beginning
+      history = history.slice(0, 50); // Keep last 50
+      fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
+    }
+  };
 
   let tiktokConnection: TikTokLiveConnection | null = null;
 
@@ -39,7 +64,8 @@ async function startServer() {
 
       tiktokConnection.connect().then(state => {
         console.log(`Connected to roomId ${state.roomId}`);
-        socket.emit("tiktok-status", { status: "connected", roomId: state.roomId });
+        saveToHistory(uniqueId);
+        socket.emit("tiktok-status", { status: "connected", roomId: state.roomId, history: getHistory() });
       }).catch(err => {
         console.error("Failed to connect", err);
         let errorMessage = err.message;
@@ -67,6 +93,10 @@ async function startServer() {
 
       tiktokConnection.on(WebcastEvent.ROOM_USER, data => {
         socket.emit("tiktok-roomUser", data);
+      });
+
+      tiktokConnection.on(WebcastEvent.FOLLOW, data => {
+        socket.emit("tiktok-follow", data);
       });
 
       tiktokConnection.on(ControlEvent.DISCONNECTED, () => {
@@ -116,6 +146,15 @@ async function startServer() {
       console.error('TTS Proxy Error:', error);
       res.status(500).send('TTS Proxy Error');
     }
+  });
+
+  app.get('/api/history', (req, res) => {
+    res.json(getHistory());
+  });
+
+  app.post('/api/history/clear', (req, res) => {
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify([], null, 2));
+    res.json({ success: true });
   });
 
   // Vite middleware for development

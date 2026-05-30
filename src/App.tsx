@@ -8,35 +8,60 @@ import {
   Palette,
   MessageSquare,
   Eye,
-  Gift
+  Gift,
+  Globe,
+  User,
+  ExternalLink,
+  Shield,
+  Heart,
+  Award
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface ChatMessage {
   id: string;
   nickname: string;
+  uniqueId: string;
+  userId: string;
   comment: string;
   profilePictureUrl: string;
   timestamp: number;
+  rawUser?: any;
 }
 
 interface JoinMessage {
   id: string;
   nickname: string;
+  uniqueId: string;
+  userId: string;
   profilePictureUrl: string;
   timestamp: number;
+  rawUser?: any;
 }
 
 interface Gifter {
   userId: string;
   nickname: string;
+  uniqueId: string;
   profilePictureUrl: string;
   totalCoins: number;
+  rawUser?: any;
+}
+
+interface GiftNotification {
+  id: string;
+  nickname: string;
+  profilePictureUrl: string;
+  giftName: string;
+  repeatCount: number;
+  diamondCount: number;
+  timestamp: number;
 }
 
 const extractUserInfo = (data: any) => {
   const user = data?.user || data || {};
   const nickname = user.nickname || user.uniqueId || user.displayId || 'Người dùng';
+  const uniqueId = user.uniqueId || user.displayId || '';
   
   let profilePictureUrl = user.profilePictureUrl || user.avatarUrl || '';
   
@@ -50,23 +75,28 @@ const extractUserInfo = (data: any) => {
   }
 
   const userId = user.userId || user.id || 'unknown';
-  return { nickname, profilePictureUrl, userId };
+  return { nickname, uniqueId, profilePictureUrl, userId, rawUser: user };
 };
 
 export default function App() {
   const [socket, setSocket] = useState<Socket | null>(null);
-  const [tiktokId, setTiktokId] = useState('');
+  const [tiktokId, setTiktokId] = useState(localStorage.getItem('lastTiktokId') || '');
   const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
   const [errorMessage, setErrorMessage] = useState('');
   const [showConfig, setShowConfig] = useState(true);
-  const [configTab, setConfigTab] = useState<'chat' | 'welcome' | 'gift'>('chat');
+  const [configTab, setConfigTab] = useState<'chat' | 'welcome' | 'gift' | 'follow' | 'page'>('chat');
+  const [externalUrl, setExternalUrl] = useState(localStorage.getItem('externalUrl') || '');
+  const [showPage, setShowPage] = useState(localStorage.getItem('showPage') === 'true');
   const [bgColor, setBgColor] = useState('#00FF00');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [joinMessages, setJoinMessages] = useState<JoinMessage[]>([]);
   const [viewerCount, setViewerCount] = useState(0);
   const [showViewers, setShowViewers] = useState(false);
+  const [history, setHistory] = useState<string[]>([]);
   const [topViewers, setTopViewers] = useState<any[]>([]);
   const [gifters, setGifters] = useState<Record<string, Gifter>>({});
+  const [giftNotifications, setGiftNotifications] = useState<GiftNotification[]>([]);
+  const [selectedUser, setSelectedUser] = useState<any | null>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const joinContainerRef = useRef<HTMLDivElement>(null);
@@ -78,6 +108,8 @@ export default function App() {
   const [welcomeTemplate, setWelcomeTemplate] = useState('Chào mừng {name} đã tham gia phòng.');
   const [giftEnabled, setGiftEnabled] = useState(false);
   const [giftTemplate, setGiftTemplate] = useState('Cảm ơn {name} đã tặng {giftName}.');
+  const [followEnabled, setFollowEnabled] = useState(false);
+  const [followTemplate, setFollowTemplate] = useState('Cảm ơn {name} đã follow phòng.');
   const [ttsVoice, setTtsVoice] = useState<string>('');
   const [ttsPitch, setTtsPitch] = useState(1);
   const [ttsRate, setTtsRate] = useState(1);
@@ -88,6 +120,8 @@ export default function App() {
   const welcomeTemplateRef = useRef(welcomeTemplate);
   const giftEnabledRef = useRef(giftEnabled);
   const giftTemplateRef = useRef(giftTemplate);
+  const followEnabledRef = useRef(followEnabled);
+  const followTemplateRef = useRef(followTemplate);
   const ttsVoiceRef = useRef(ttsVoice);
   const ttsPitchRef = useRef(ttsPitch);
   const ttsRateRef = useRef(ttsRate);
@@ -119,6 +153,14 @@ export default function App() {
   }, [giftTemplate]);
 
   useEffect(() => {
+    followEnabledRef.current = followEnabled;
+  }, [followEnabled]);
+
+  useEffect(() => {
+    followTemplateRef.current = followTemplate;
+  }, [followTemplate]);
+
+  useEffect(() => {
     ttsVoiceRef.current = ttsVoice;
   }, [ttsVoice]);
 
@@ -129,6 +171,14 @@ export default function App() {
   useEffect(() => {
     ttsRateRef.current = ttsRate;
   }, [ttsRate]);
+
+  useEffect(() => {
+    localStorage.setItem('externalUrl', externalUrl);
+  }, [externalUrl]);
+
+  useEffect(() => {
+    localStorage.setItem('showPage', showPage.toString());
+  }, [showPage]);
 
   useEffect(() => {
     // Load TTS voices
@@ -156,6 +206,14 @@ export default function App() {
 
     loadVoices();
     window.speechSynthesis.onvoiceschanged = loadVoices;
+
+    // Load History
+    fetch('/api/history')
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) setHistory(data);
+      })
+      .catch(err => console.error("Failed to fetch history:", err));
   }, []);
 
   useEffect(() => {
@@ -166,6 +224,8 @@ export default function App() {
       if (data.status === 'connected') {
         setStatus('connected');
         setShowConfig(false);
+        if (data.history) setHistory(data.history);
+        localStorage.setItem('lastTiktokId', tiktokId);
       } else if (data.status === 'error') {
         setStatus('error');
         setErrorMessage(data.message);
@@ -175,7 +235,7 @@ export default function App() {
     });
 
     newSocket.on('tiktok-chat', (data: any) => {
-      const { nickname, profilePictureUrl, userId } = extractUserInfo(data);
+      const { nickname, uniqueId, profilePictureUrl, userId, rawUser } = extractUserInfo(data);
       const comment = data.comment || '';
 
       if (ttsEnabledRef.current) {
@@ -193,14 +253,17 @@ export default function App() {
       setChatMessages(prev => [...prev, {
         id: Math.random().toString(36).substring(7),
         nickname,
+        uniqueId,
+        userId,
         comment,
         profilePictureUrl,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        rawUser
       }].slice(-50));
     });
 
     newSocket.on('tiktok-member', (data: any) => {
-      const { nickname, profilePictureUrl } = extractUserInfo(data);
+      const { nickname, uniqueId, profilePictureUrl, userId, rawUser } = extractUserInfo(data);
 
       if (welcomeEnabledRef.current) {
         const message = welcomeTemplateRef.current.replace('{name}', nickname);
@@ -209,8 +272,11 @@ export default function App() {
       setJoinMessages(prev => [...prev, {
         id: Math.random().toString(36).substring(7),
         nickname,
+        uniqueId,
+        userId,
         profilePictureUrl,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        rawUser
       }].slice(-20));
     });
 
@@ -226,36 +292,65 @@ export default function App() {
       }
     });
 
+    newSocket.on('tiktok-follow', (data: any) => {
+      const { nickname } = extractUserInfo(data);
+
+      if (followEnabledRef.current) {
+        const message = followTemplateRef.current.replace('{name}', nickname);
+        speak(message);
+      }
+    });
+
     newSocket.on('tiktok-gift', (data: any) => {
       const giftType = data.giftDetails?.giftType;
       const diamondCount = data.giftDetails?.diamondCount || 0;
       const giftName = data.giftDetails?.giftName || 'quà';
-      const { nickname, profilePictureUrl, userId } = extractUserInfo(data);
+      const repeatCount = data.repeatCount || 1;
+      const { nickname, uniqueId, profilePictureUrl, userId, rawUser } = extractUserInfo(data);
 
       if (giftType === 1 && !data.repeatEnd) return; // Skip intermediate streak events
       
-      const coins = diamondCount * (data.repeatCount || 1);
+      const coins = diamondCount * repeatCount;
       if (coins <= 0) return;
 
       if (giftEnabledRef.current) {
         let message = giftTemplateRef.current.replace('{name}', nickname);
         message = message.replace('{giftName}', giftName);
-        message = message.replace('{count}', (data.repeatCount || 1).toString());
+        message = message.replace('{count}', repeatCount.toString());
         speak(message);
       }
+
+      // Push gift notification
+      const notifId = Math.random().toString(36).substring(7);
+      setGiftNotifications(prev => [...prev, {
+        id: notifId,
+        nickname,
+        profilePictureUrl,
+        giftName,
+        repeatCount,
+        diamondCount,
+        timestamp: Date.now(),
+      }].slice(-5));
+      // Auto-remove after 4s
+      setTimeout(() => {
+        setGiftNotifications(prev => prev.filter(n => n.id !== notifId));
+      }, 4000);
 
       setGifters(prev => {
         const existing = prev[userId] || {
           userId,
           nickname,
+          uniqueId,
           profilePictureUrl,
-          totalCoins: 0
+          totalCoins: 0,
+          rawUser
         };
         return {
           ...prev,
           [userId]: {
             ...existing,
-            totalCoins: existing.totalCoins + coins
+            totalCoins: existing.totalCoins + coins,
+            rawUser
           }
         };
       });
@@ -418,7 +513,8 @@ export default function App() {
                 animate={{ opacity: 1, x: 0, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.9 }}
                 transition={{ duration: 0.2 }}
-                className="bg-white/90 backdrop-blur-sm rounded-2xl p-3 shadow-sm border border-slate-100 flex gap-3 items-start pointer-events-auto"
+                className="bg-white/90 backdrop-blur-sm rounded-2xl p-3 shadow-sm border border-slate-100 flex gap-3 items-start pointer-events-auto cursor-pointer hover:bg-slate-50 transition-colors"
+                onClick={() => setSelectedUser({ ...msg, type: 'chat' })}
               >
                 <img src={msg.profilePictureUrl} alt="" className="w-8 h-8 rounded-full bg-slate-200 object-cover shrink-0" referrerPolicy="no-referrer" />
                 <div className="flex-1 min-w-0">
@@ -431,6 +527,24 @@ export default function App() {
           <div ref={messagesEndRef} className="h-1 shrink-0" />
         </div>
       </div>
+
+      {/* External Page Overlay */}
+      {showPage && externalUrl && (
+        <div className="absolute inset-0 z-15 flex items-center justify-center p-20 pointer-events-none">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full h-full bg-white/10 backdrop-blur-md rounded-3xl overflow-hidden border border-white/20 shadow-2xl pointer-events-auto"
+          >
+            <iframe 
+              src={externalUrl} 
+              className="w-full h-full border-none"
+              title="External Content"
+              allow="autoplay; encrypted-media"
+            />
+          </motion.div>
+        </div>
+      )}
 
       {/* Join Overlay */}
       <div className="absolute inset-y-0 right-0 w-80 p-6 z-20 flex flex-col justify-end pointer-events-none">
@@ -452,7 +566,8 @@ export default function App() {
                 animate={{ opacity: 1, x: 0, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.9 }}
                 transition={{ duration: 0.2 }}
-                className="bg-emerald-500/90 backdrop-blur-sm rounded-full p-1.5 pr-4 shadow-sm border border-emerald-400/50 flex gap-2 items-center pointer-events-auto self-end"
+                className="bg-emerald-500/90 backdrop-blur-sm rounded-full p-1.5 pr-4 shadow-sm border border-emerald-400/50 flex gap-2 items-center pointer-events-auto self-end cursor-pointer hover:bg-emerald-600/90 transition-colors"
+                onClick={() => setSelectedUser({ ...msg, type: 'join' })}
               >
                 <img src={msg.profilePictureUrl} alt="" className="w-6 h-6 rounded-full bg-emerald-600 object-cover shrink-0" referrerPolicy="no-referrer" />
                 <div className="text-xs font-bold text-white truncate max-w-[150px]">
@@ -463,6 +578,40 @@ export default function App() {
           </AnimatePresence>
           <div ref={joinEndRef} className="h-1 shrink-0" />
         </div>
+      </div>
+
+      {/* Gift Notification Overlay */}
+      <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center gap-2 pointer-events-none">
+        <AnimatePresence>
+          {giftNotifications.map((notif) => (
+            <motion.div
+              key={notif.id}
+              initial={{ opacity: 0, y: 30, scale: 0.85 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -20, scale: 0.9 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+              className="flex items-center gap-3 bg-gradient-to-r from-pink-500/90 to-rose-500/90 backdrop-blur-md rounded-full px-4 py-2 shadow-xl border border-pink-400/40"
+            >
+              <img
+                src={notif.profilePictureUrl}
+                alt=""
+                className="w-9 h-9 rounded-full object-cover border-2 border-white/40 shrink-0"
+                referrerPolicy="no-referrer"
+              />
+              <div className="text-white text-sm font-bold">
+                <span className="opacity-90">{notif.nickname}</span>
+                <span className="opacity-70 font-medium"> đã tặng </span>
+                <span>🎁 {notif.giftName}</span>
+                {notif.repeatCount > 1 && (
+                  <span className="ml-1 bg-white/20 rounded-full px-2 py-0.5 text-xs font-black">×{notif.repeatCount}</span>
+                )}
+              </div>
+              <div className="flex items-center gap-1 bg-white/20 rounded-full px-2 py-0.5">
+                <span className="text-yellow-300 text-xs font-black">💎 {(notif.diamondCount * notif.repeatCount).toLocaleString()}</span>
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
 
       {/* Overlay UI */}
@@ -503,7 +652,8 @@ export default function App() {
                       <motion.div 
                         layout
                         key={gifter.userId}
-                        className="flex items-center gap-3"
+                        className="flex items-center gap-3 cursor-pointer hover:bg-white/10 p-2 -mx-2 rounded-xl transition-colors"
+                        onClick={() => setSelectedUser({ ...gifter, type: 'gift' })}
                       >
                         <div className="relative shrink-0">
                           <img src={gifter.profilePictureUrl} className="w-8 h-8 rounded-full border border-white/20 object-cover" referrerPolicy="no-referrer" alt="" />
@@ -560,10 +710,16 @@ export default function App() {
                 {topViewers.length > 0 ? (
                   <div className="space-y-4">
                     {topViewers.map((viewer, index) => {
-                      const { nickname, profilePictureUrl, userId } = extractUserInfo(viewer);
+                      const { nickname, uniqueId, profilePictureUrl, userId, rawUser } = extractUserInfo(viewer);
                       
                       return (
-                        <div key={userId || index} className="flex items-center gap-3">
+                        <div 
+                          key={userId || index} 
+                          className="flex items-center gap-3 cursor-pointer hover:bg-slate-50 p-2 -mx-2 rounded-2xl transition-colors"
+                          onClick={() => {
+                            setSelectedUser({ nickname, uniqueId, profilePictureUrl, userId, rawUser, type: 'viewer' });
+                          }}
+                        >
                           <img src={profilePictureUrl} alt="" className="w-10 h-10 rounded-full bg-slate-200 object-cover" referrerPolicy="no-referrer" />
                           <div className="flex-1 min-w-0">
                             <div className="text-sm font-bold text-slate-800 truncate">{nickname}</div>
@@ -581,6 +737,129 @@ export default function App() {
                     Chưa có dữ liệu người xem (Top Viewers)
                   </div>
                 )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* User Details Modal */}
+      <AnimatePresence>
+        {selectedUser && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-slate-900/60 backdrop-blur-md"
+              onClick={() => setSelectedUser(null)}
+            />
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="relative w-full max-w-sm bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-200"
+            >
+              <div className="relative h-24 bg-gradient-to-br from-blue-500 to-purple-600">
+                <button 
+                  onClick={() => setSelectedUser(null)} 
+                  className="absolute top-4 right-4 p-2 bg-black/20 hover:bg-black/40 backdrop-blur-sm rounded-full transition-colors text-white"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="p-6">
+                <div className="flex gap-6">
+                  {/* Avatar Left */}
+                  <div className="w-32 h-32 shrink-0">
+                    <img 
+                      src={selectedUser.profilePictureUrl} 
+                      alt="" 
+                      className="w-full h-full rounded-full object-cover bg-slate-100 shadow-sm" 
+                      referrerPolicy="no-referrer" 
+                    />
+                  </div>
+
+                  {/* Info Right */}
+                  <div className="flex-1 space-y-4">
+                    {/* Tên */}
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-500 shrink-0 mt-1">
+                        <User size={14} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Tên</div>
+                        <div className="text-sm font-bold text-slate-700 truncate">{selectedUser.nickname || 'Không rõ'}</div>
+                      </div>
+                    </div>
+
+                    {/* ID */}
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-500 shrink-0 mt-1">
+                        <Shield size={14} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">ID</div>
+                        <div className="text-sm font-bold text-slate-700 truncate">{selectedUser.uniqueId || selectedUser.userId || 'Không rõ'}</div>
+                      </div>
+                    </div>
+
+                    {/* Số Follower */}
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-full bg-purple-100 flex items-center justify-center text-purple-500 shrink-0 mt-1">
+                        <Heart size={14} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Số Follower</div>
+                        <div className="text-sm font-bold text-slate-700 truncate">
+                          {selectedUser.rawUser?.followInfo?.followerCount != null
+                            ? Number(selectedUser.rawUser.followInfo.followerCount).toLocaleString()
+                            : 'Không rõ'}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Đang Follow */}
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-500 shrink-0 mt-1">
+                        <Award size={14} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Đang Follow</div>
+                        <div className="text-sm font-bold text-slate-700 truncate">
+                          {selectedUser.rawUser?.followInfo?.followingCount != null
+                            ? Number(selectedUser.rawUser.followInfo.followingCount).toLocaleString()
+                            : 'Không rõ'}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Vai trò */}
+                    {(selectedUser.rawUser?.isModerator || selectedUser.rawUser?.userBadges?.some((b:any) => b?.type === 'moderator')) && (
+                      <div className="flex items-start gap-3">
+                        <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center text-amber-500 shrink-0 mt-1">
+                          <Shield size={14} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Vai trò</div>
+                          <div className="text-sm font-bold text-amber-600 truncate">Quản lý</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-6 flex gap-2">
+                    <a 
+                      href={`https://www.tiktok.com/@${selectedUser.uniqueId || selectedUser.userId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-2.5 rounded-xl flex items-center justify-center gap-2 text-xs font-black uppercase tracking-widest transition-colors"
+                    >
+                      <ExternalLink size={14} />
+                      TikTok Profile
+                    </a>
+                </div>
               </div>
             </motion.div>
           </div>
@@ -639,37 +918,105 @@ export default function App() {
                         </div>
                       )}
                     </div>
+                    
+                    {history.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-2 items-center">
+                        {history.slice(0, 5).map((id) => (
+                          <button
+                            key={id}
+                            onClick={() => setTiktokId(id)}
+                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-[10px] font-bold transition-all border border-slate-200"
+                          >
+                            {id}
+                          </button>
+                        ))}
+                        {history.length > 0 && (
+                          <button 
+                            onClick={() => {
+                              fetch('/api/history/clear', { method: 'POST' })
+                                .then(() => setHistory([]));
+                            }}
+                            className="text-[10px] font-bold text-slate-400 hover:text-red-500 transition-colors ml-auto"
+                          >
+                            Xóa lịch sử
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
 
-                  <div className="flex bg-slate-100 p-1 rounded-2xl">
-                    <button 
-                      onClick={() => setConfigTab('chat')}
-                      className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                        configTab === 'chat' ? 'bg-white shadow-sm text-blue-500' : 'text-slate-400'
-                      }`}
-                    >
-                      <MessageSquare size={14} className={configTab === 'chat' ? 'fill-blue-500' : ''} />
-                      Bình Luận
-                    </button>
-                    <button 
-                      onClick={() => setConfigTab('welcome')}
-                      className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                        configTab === 'welcome' ? 'bg-white shadow-sm text-emerald-500' : 'text-slate-400'
-                      }`}
-                    >
-                      <Volume2 size={14} className={configTab === 'welcome' ? 'text-emerald-500' : ''} />
-                      Chào Mừng
-                    </button>
-                    <button 
-                      onClick={() => setConfigTab('gift')}
-                      className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                        configTab === 'gift' ? 'bg-white shadow-sm text-amber-500' : 'text-slate-400'
-                      }`}
-                    >
-                      <Gift size={14} className={configTab === 'gift' ? 'text-amber-500' : ''} />
-                      Quà
-                    </button>
-                  </div>
+                    {/* Enable All / Disable All */}
+                    {(() => {
+                      const allEnabled = ttsEnabled && welcomeEnabled && giftEnabled && followEnabled;
+                      const handleToggleAll = () => {
+                        const next = !allEnabled;
+                        setTtsEnabled(next);
+                        setWelcomeEnabled(next);
+                        setGiftEnabled(next);
+                        setFollowEnabled(next);
+                      };
+                      return (
+                        <button
+                          onClick={handleToggleAll}
+                          className={`w-full flex items-center justify-center gap-2 py-3 rounded-2xl border-2 transition-all font-black text-xs uppercase tracking-widest ${
+                            allEnabled
+                              ? 'bg-gradient-to-r from-blue-50 to-emerald-50 border-emerald-300 text-emerald-600 shadow-sm shadow-emerald-200'
+                              : 'bg-slate-50 border-slate-200 text-slate-400 hover:border-slate-300'
+                          }`}
+                        >
+                          {allEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
+                          {allEnabled ? '✅ Đang Bật Tất Cả TTS' : '🔇 Bật Tất Cả TTS'}
+                        </button>
+                      );
+                    })()}
+
+                    <div className="flex bg-slate-100 p-1 rounded-2xl">
+                      <button 
+                        onClick={() => setConfigTab('welcome')}
+                        className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                          configTab === 'welcome' ? 'bg-white shadow-sm text-emerald-500' : 'text-slate-400'
+                        }`}
+                      >
+                        <Volume2 size={14} className={configTab === 'welcome' ? 'text-emerald-500' : ''} />
+                        Chào
+                      </button>
+                      <button 
+                        onClick={() => setConfigTab('chat')}
+                        className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                          configTab === 'chat' ? 'bg-white shadow-sm text-blue-500' : 'text-slate-400'
+                        }`}
+                      >
+                        <MessageSquare size={14} className={configTab === 'chat' ? 'fill-blue-500' : ''} />
+                        Bình Luận
+                      </button>
+                      <button 
+                        onClick={() => setConfigTab('follow')}
+                        className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                          configTab === 'follow' ? 'bg-white shadow-sm text-pink-500' : 'text-slate-400'
+                        }`}
+                      >
+                        <Volume2 size={14} className={configTab === 'follow' ? 'text-pink-500' : ''} />
+                        Follow
+                      </button>
+                      <button 
+                        onClick={() => setConfigTab('gift')}
+                        className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                          configTab === 'gift' ? 'bg-white shadow-sm text-amber-500' : 'text-slate-400'
+                        }`}
+                      >
+                        <Gift size={14} className={configTab === 'gift' ? 'text-amber-500' : ''} />
+                        Quà
+                      </button>
+                      <button 
+                        onClick={() => setConfigTab('page')}
+                        className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                          configTab === 'page' ? 'bg-white shadow-sm text-indigo-500' : 'text-slate-400'
+                        }`}
+                      >
+                        <Globe size={14} className={configTab === 'page' ? 'text-indigo-500' : ''} />
+                        Trang
+                      </button>
+                    </div>
 
                   {configTab === 'chat' && (
                     <div className="space-y-4">
@@ -814,6 +1161,83 @@ export default function App() {
                             placeholder="Cảm ơn {name} đã tặng {count} {giftName}"
                             className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-4 py-3 text-slate-800 font-bold outline-none focus:border-amber-500/50 transition-all text-sm"
                           />
+                        </motion.div>
+                      )}
+                    </div>
+                  )}
+
+                  {configTab === 'follow' && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Cảm ơn người Follow</label>
+                        <button 
+                          onClick={() => setFollowEnabled(!followEnabled)}
+                          className={`w-full flex items-center justify-center gap-2 py-3 rounded-2xl border-2 transition-all font-bold text-sm ${
+                            followEnabled 
+                            ? 'bg-pink-50 border-pink-200 text-pink-600' 
+                            : 'bg-slate-50 border-slate-100 text-slate-400'
+                          }`}
+                        >
+                          {followEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
+                          {followEnabled ? 'Đang Bật' : 'Đang Tắt'}
+                        </button>
+                      </div>
+
+                      {followEnabled && (
+                        <motion.div 
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          className="pt-2"
+                        >
+                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 flex justify-between">
+                            <span>Câu cảm ơn (Dùng {'{name}'} để thay tên)</span>
+                          </label>
+                          <input 
+                            type="text" 
+                            value={followTemplate}
+                            onChange={(e) => setFollowTemplate(e.target.value)}
+                            placeholder="Cảm ơn {name} đã follow phòng."
+                            className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-4 py-3 text-slate-800 font-bold outline-none focus:border-pink-500/50 transition-all text-sm"
+                          />
+                        </motion.div>
+                      )}
+                    </div>
+                  )}
+
+                  {configTab === 'page' && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Hiển thị trang web ở giữa</label>
+                        <button 
+                          onClick={() => setShowPage(!showPage)}
+                          className={`w-full flex items-center justify-center gap-2 py-3 rounded-2xl border-2 transition-all font-bold text-sm ${
+                            showPage 
+                            ? 'bg-indigo-50 border-indigo-200 text-indigo-600' 
+                            : 'bg-slate-50 border-slate-100 text-slate-400'
+                          }`}
+                        >
+                          {showPage ? <Globe size={16} /> : <Globe size={16} className="opacity-40" />}
+                          {showPage ? 'Đang Hiện' : 'Đang Ẩn'}
+                        </button>
+                      </div>
+
+                      {showPage && (
+                        <motion.div 
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          className="pt-2"
+                        >
+                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Link trang web</label>
+                          <input 
+                            type="text" 
+                            value={externalUrl}
+                            onChange={(e) => setExternalUrl(e.target.value)}
+                            placeholder="https://example.com"
+                            className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-4 py-3 text-slate-800 font-bold outline-none focus:border-indigo-500/50 transition-all text-sm"
+                          />
+                          <p className="mt-2 text-[10px] text-slate-400 font-medium italic">
+                            * Lưu ý: Một số trang web có thể chặn hiển thị qua iframe.
+                          </p>
                         </motion.div>
                       )}
                     </div>

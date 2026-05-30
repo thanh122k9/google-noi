@@ -10,6 +10,6 @@ if not exist "node_modules\" (
 echo [SYSTEM] Khoi chay Dev Server va tu dong mo trinh duyet...
 
 :: Chạy ngầm bộ đếm 3 giây chờ server khởi động rồi mở web
-start /B cmd /c "timeout /t 3 >nul && start http://localhost:3000"
+start /B cmd /c "timeout /t 3 >nul && start http://localhost:3009"
 
 call npm run dev
